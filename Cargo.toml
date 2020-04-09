@@ -1,0 +1,26 @@
+[package]
+name = "svpwm-stm32"
+version = "0.1.0"
+authors = ["Jack Boyce <jboyce@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+cortex-m = "0.6.2"
+cortex-m-rt = "0.6.11"
+embedded-hal = "0.2.3"
+stm32f4 = "0.10.0"
+panic-itm = "0.4.1"
+libm = "0.2.1"
+
+[dependencies.stm32f4xx-hal]
+version = "0.7"
+features = ["rt", "stm32f446"]
+
+[profile.dev]
+debug = true
+lto = false
+
+[profile.release]
+debug = true
+lto = true
+opt-level = "s"
