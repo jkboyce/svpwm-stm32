@@ -329,7 +329,7 @@ fn update_motor_drive(theta: f32, mod_depth: f32) {
     });
 }
 
-/// Determines the maximum `duty_mult` for the motor.
+/// Determines maximum duty cycle for the motor.
 ///
 /// This runs the motor angleslowly through two full electrical cycles, at 1.0
 /// modulation depth. This will likely trigger multiple overcurrent faults, which
@@ -360,8 +360,8 @@ fn calibrate_pwm() {
     });
 }
 
-/// (Interrupt service routine) Handles when the motor driver has an overcurrent fault
-/// and the EN/FAULT input is pulled low.
+/// (ISR) Handles when the motor driver has an overcurrent fault and the EN/FAULT
+/// input is pulled low.
 ///
 /// The idea here is to reduce the PWM duty cycle multiplier `duty_mult`, then wait
 /// for the fault to clear and restart.
