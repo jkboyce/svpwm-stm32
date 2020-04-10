@@ -66,6 +66,9 @@ struct SvpwmState {
 
     /// Timer period (clock ticks)
     tim_period: u16,
+
+    /// Pole pairs (North/South magnet pairs in rotor)
+    pole_pairs: u8,
 }
 
 impl SvpwmState {
@@ -75,6 +78,7 @@ impl SvpwmState {
             mod_depth: 0.0,
             duty_mult: 1.0,
             tim_period: 0,
+            pole_pairs: 2,
         }
     }
 
@@ -163,7 +167,7 @@ fn main() -> ! {
     let gpioa = dp.GPIOA.split();
     let mut led = gpioa.pa5.into_push_pull_output();
     let mut en_fault = gpioa.pa6.into_floating_input();
-    let _drive_u = gpioa.pa8.into_alternate_af1();   // TIM1 outputs
+    let _drive_u = gpioa.pa8.into_alternate_af1();   // TIM1 pwm outputs
     let _drive_v = gpioa.pa9.into_alternate_af1();
     let _drive_w = gpioa.pa10.into_alternate_af1();
 
@@ -201,13 +205,16 @@ fn main() -> ! {
         MUTEX_LED.borrow(cs).replace(Some(led));
     });
 
+    start_tim1_pwm(&clocks);
+
     free(|cs| {
+        if let Some(ref mut svpwm) = MUTEX_SVPWM.borrow(cs).borrow_mut().deref_mut() {
+            svpwm.pole_pairs = 6;
+        }
         if let Some(ref mut itm) = MUTEX_ITM.borrow(cs).borrow_mut().deref_mut() {
             iprintln!(&mut itm.stim[0], "SVPWM demo");
         }
     });
-
-    start_tim1_pwm(&clocks);
 
     // enable interrupts
     unsafe { NVIC::unmask(interrupt::EXTI9_5) };
@@ -284,7 +291,7 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
     state.tim_period = arr;
     free(|cs| MUTEX_SVPWM.borrow(cs).replace(Some(state)));
 
-    update_motor_drive(0.0, 0.0);   // loads channel CCR registers
+    update_motor_drive(0.0, 0.0);   // preloads channel CCR registers
 
     // trigger update event to load the registers
     tim1.cr1.modify(|_, w| w.urs().set_bit());
@@ -331,9 +338,9 @@ fn update_motor_drive(theta: f32, mod_depth: f32) {
 
 /// Determines maximum duty cycle for the motor.
 ///
-/// This runs the motor angleslowly through two full electrical cycles, at 1.0
+/// This runs the motor angle slowly through two full electrical cycles, at 1.0
 /// modulation depth. This will likely trigger multiple overcurrent faults, which
-/// will cause the interrupt routine below to back off the duty cycles until
+/// will cause the interrupt routine below to back off the duty cycle until
 /// there are no more overcurrents.
 fn calibrate_pwm() {
     let max_theta: f32 = 2.0 * FRAC_PI_3;
@@ -352,7 +359,7 @@ fn calibrate_pwm() {
         if let Some(ref mut svpwm) = MUTEX_SVPWM.borrow(cs).borrow_mut().deref_mut() {
             if let Some(ref mut itm) = MUTEX_ITM.borrow(cs).borrow_mut().deref_mut() {
                 iprintln!(&mut itm.stim[0],
-                    "Calibration finished: Duty_mult = {}%",
+                    "Calibration done: duty_mult = {}%",
                     (100.0 * svpwm.duty_mult) as u8
                 );
             }
@@ -376,7 +383,7 @@ fn EXTI9_5() {
 
             if let Some(ref mut itm) = MUTEX_ITM.borrow(cs).borrow_mut().deref_mut() {
                 iprintln!(&mut itm.stim[0],
-                    "int--drive scaler = {}%",
+                    "ISR: duty_mult = {}%",
                     (100.0 * svpwm.duty_mult) as u8
                 );
             }
@@ -423,28 +430,111 @@ fn EXTI15_10() {
 ///
 /// Returns the next program number in the sequence.
 fn do_motor_program(program: u8) -> u8 {
-    let pole_pairs = 6;
+    let mut pole_pairs: u8 = 2;
+    free(|cs| {
+        if let Some(ref mut svpwm) = MUTEX_SVPWM.borrow(cs).borrow_mut().deref_mut() {
+            pole_pairs = svpwm.pole_pairs;
+        }
+    });
 
     return match program {
         0 => {
+            // sprinkler kind of movement
+            let num_rot: f32 = 0.5;
+            let stops = 8;
+            let steps = 5000;
+
+            for step in 0..steps {
+                cortex_m::asm::delay(600_000_000 / steps);
+
+                let mut theta = 0.0;
+                if step < 2 * steps / 3 {
+                    let steps_per_stop = 2 * steps / 3 / stops;
+                    let theta_per_stop = num_rot * pole_pairs as f32 * 2.0 * PI / stops as f32;
+                    let mut step_temp = step;
+
+                    while step_temp >= steps_per_stop {
+                        step_temp -= steps_per_stop;
+                        theta += theta_per_stop;
+                    }
+
+                    if step_temp < steps_per_stop / 4 {
+                        theta += theta_per_stop
+                                 * step_temp as f32 / ((steps_per_stop / 4) as f32);
+                    } else {
+                        theta += theta_per_stop;
+                    }
+                } else if step < 4 * steps / 5 {
+                    theta = num_rot * pole_pairs as f32 * 2.0 * PI;
+                } else {
+                    theta = num_rot * pole_pairs as f32 * 2.0 * PI
+                            * (1.0 - (step - 4 * steps / 5) as f32 / (steps / 5) as f32);
+                }
+                update_motor_drive(theta, 1.0);
+            }
+            cortex_m::asm::delay(60_000_000);
+
+            program + 1
+        },
+        1 => {
+            // angular simple harmonic motion through `num_rot` revolutions
             let num_rot: f32 = 1.0;
             let steps = 5000;
 
             for step in 0..steps {
                 cortex_m::asm::delay(150_000_000 / steps);
                 let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
-                let mut theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
-                while theta >= 2.0 * PI {
-                    theta -= 2.0 * PI;
-                }
-                while theta < 0.0 {
-                    theta += 2.0 * PI;
-                }
+                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
                 update_motor_drive(theta, 1.0);
             }
 
-            1
+            program + 1
         },
-        _ => { 0 }
+        2 => {
+            // same thing, 7.5x faster
+            let num_rot: f32 = 1.0;
+            let steps = 5000;
+
+            for step in 0..steps {
+                cortex_m::asm::delay(20_000_000 / steps);
+                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
+                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
+                update_motor_drive(theta, 1.0);
+            }
+
+            program + 1
+        },
+        3 => {
+            // 2x slower than first program
+            let num_rot: f32 = 1.0;
+            let steps = 5000;
+
+            for step in 0..steps {
+                cortex_m::asm::delay(300_000_000 / steps);
+                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
+                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
+                update_motor_drive(theta, 1.0);
+            }
+
+            program + 1
+        },
+        4 => {
+            // more revolutions
+            let num_rot: f32 = 5.0;
+            let steps = 5000;
+
+            for step in 0..steps {
+                cortex_m::asm::delay(150_000_000 / steps);
+                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
+                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
+                update_motor_drive(theta, 1.0);
+            }
+
+            program + 1
+        },
+        _ => {
+            cortex_m::asm::delay(30_000_000);
+            0
+        }
     };
 }
