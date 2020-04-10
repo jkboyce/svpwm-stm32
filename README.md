@@ -10,7 +10,7 @@ This project controls BLDC motors in a very different way, using a space vector 
 This code runs as-is on a NUCLEO-F446RE development board with mounted X-NUCLEO-IHM17M1 motor driver. Other hardware configurations may likely require some adaptation. A complete list of hardware needed:
 - [NUCLEO-F446RE](https://www.st.com/en/evaluation-tools/nucleo-f446re.html).
 - [X-NUCLEO-IHM17M1](https://www.st.com/en/ecosystems/x-nucleo-ihm17m1.html).
-- Power supply for the motor driver, between 3 and 10 Volts, capable of supplying a few Amps peak. You could use a power supply, or a 1S or 2S LiPo battery.
+- Power source for the motor driver: between 3 and 10 Volts, and capable of supplying a few Amps peak. You could use a power supply, or a 1S or 2S LiPo battery.
 - A drone motor. I've tested with small motors in the 4000-8000 KV range, and others should work.
 - A mini USB cable (not micro USB!) to connect your computer to the NUCLEO's onboard ST-LINK debugger.
 
