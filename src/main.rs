@@ -438,7 +438,27 @@ fn do_motor_program(program: u8) -> u8 {
     });
 
     return match program {
-        0 => {
+        0 | 1 | 2 | 3 => {
+            // angular simple harmonic motion through `num_rot` revolutions
+            let steps = 5000;
+            let num_rot: f32 = if program == 3 { 5.0 } else { 1.0 };
+            let ticks = match program {
+                0 => 150_000_000,
+                1 => 20_000_000,
+                2 => 300_000_000,
+                _ => 150_000_000,
+            };
+
+            for step in 0..steps {
+                cortex_m::asm::delay(ticks / steps);
+                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
+                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
+                update_motor_drive(theta, 1.0);
+            }
+
+            program + 1
+        },
+        4 => {
             // sprinkler kind of movement
             let num_rot: f32 = 0.5;
             let stops = 8;
@@ -473,62 +493,6 @@ fn do_motor_program(program: u8) -> u8 {
                 update_motor_drive(theta, 1.0);
             }
             cortex_m::asm::delay(60_000_000);
-
-            program + 1
-        },
-        1 => {
-            // angular simple harmonic motion through `num_rot` revolutions
-            let num_rot: f32 = 1.0;
-            let steps = 5000;
-
-            for step in 0..steps {
-                cortex_m::asm::delay(150_000_000 / steps);
-                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
-                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
-                update_motor_drive(theta, 1.0);
-            }
-
-            program + 1
-        },
-        2 => {
-            // same thing, 7.5x faster
-            let num_rot: f32 = 1.0;
-            let steps = 5000;
-
-            for step in 0..steps {
-                cortex_m::asm::delay(20_000_000 / steps);
-                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
-                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
-                update_motor_drive(theta, 1.0);
-            }
-
-            program + 1
-        },
-        3 => {
-            // 2x slower than first program
-            let num_rot: f32 = 1.0;
-            let steps = 5000;
-
-            for step in 0..steps {
-                cortex_m::asm::delay(300_000_000 / steps);
-                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
-                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
-                update_motor_drive(theta, 1.0);
-            }
-
-            program + 1
-        },
-        4 => {
-            // more revolutions
-            let num_rot: f32 = 5.0;
-            let steps = 5000;
-
-            for step in 0..steps {
-                cortex_m::asm::delay(150_000_000 / steps);
-                let arg = (4.0 * step as f32 / steps as f32 - 1.0) * 0.5 * PI;
-                let theta = PI * num_rot * pole_pairs as f32 * (1.0 + sinf(arg));
-                update_motor_drive(theta, 1.0);
-            }
 
             program + 1
         },
