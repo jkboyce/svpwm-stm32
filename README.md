@@ -11,7 +11,7 @@ This code runs as-is on a NUCLEO-F446RE development board with mounted X-NUCLEO-
 - [NUCLEO-F446RE](https://www.st.com/en/evaluation-tools/nucleo-f446re.html).
 - [X-NUCLEO-IHM17M1](https://www.st.com/en/ecosystems/x-nucleo-ihm17m1.html).
 - Power source for the motor driver: between 3 and 10 Volts, and able to supply a few Amps peak. You could use a power supply, or a 1S or 2S LiPo battery.
-- A drone motor. I've tested with small motors in the 4000-8000 KV range, but others should work. NOTE: be sure your motor can handle 1.3 Amps through its coils without generating too much heat. For drone motors this won't be an issue, but for motors with more turns and higher winding resistance (e.g., gimbal motors) this could be a problem.
+- A drone motor. I've tested with small motors in the 4000-8000 KV range, but others should work. NOTE: be sure your motor can handle 1.3 Amps through its coils without generating too much heat. For drone motors this won't be an issue, but for motors with more turns and higher winding resistance (e.g., gimbal motors) this could be a problem. You can adjust the max. driving current in this line: `start_tim3_pwm(&clocks, 0.15);` where the 0.15 is the current limit in Amps (peak, not rms).
 - A mini USB cable (not micro USB!) to connect your computer to the NUCLEO's onboard ST-LINK debugger.
 
 [The Discovery Book](https://docs.rust-embedded.org/discovery/) for embedded Rust development has detailed instructions on how to set up a Rust development environment targeting Arm microcontrollers. The book focuses on the [STM32F3 Discovery Kit](https://www.st.com/en/evaluation-tools/stm32f3discovery.html) board, which is very similar to the NUCLEO used in this project.
