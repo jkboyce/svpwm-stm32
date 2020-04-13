@@ -17,9 +17,14 @@
 //! X-NUCLEO-IHM17M1 motor driver. Other hardware configurations may require
 //! some adaptation.
 //!
-//! NOTE: During calibration this driver sends roughly 1.3 Amps rms through
-//! the motor coils. Be sure that any motor you try this on can tolerate that
-//! current. Virtually any drone-class motor is fine.
+//! NOTE: This driver limits current through the motor coils in two ways:
+//! (1) The STSPIN233 chip generates an overcurrent fault when current exceeds
+//! 1.3 amps, and (2) we generate a current reference (see `start_tim3_pwm()`)
+//! and a hardware trigger (`STOP_PWM`) is generated when the current exceeds
+//! this value. In either case we back off the drive until no more overcurrent
+//! events occur. If your motor can't take a sustained current of an amp rms
+//! (any drone-class motor should be fine), then put a more sensible limit in
+//! the call to `start_tim3_pwm()`.
 
 // Copyright 2020 by Jack Boyce (jboyce@gmail.com)
 // Released under MIT License
@@ -58,7 +63,7 @@ struct SvpwmState {
     /// Modulation depth (drive strength), 0 <= m <= 1
     mod_depth: f32,
 
-    /// Duty cycle multiplier to prevent overcurrent faults
+    /// Duty cycle multiplier to prevent overcurrent events
     duty_mult: f32,
 
     /// Timer period (clock ticks)
@@ -149,17 +154,17 @@ fn main() -> ! {
     let cp = cortex_m::Peripherals::take().unwrap();
     let mut dp = stm32::Peripherals::take().unwrap();
 
-    // enable SYSCFG clock so we can configure EXTI interrupts
+    // Enable SYSCFG clock so we can configure EXTI interrupts.
     dp.RCC.apb2enr.write(|w| w.syscfgen().enabled());
 
     // Configure clocks
     // If you change SYSCLK and use ITM debugging, remember to update TPIU
-    // frequency in openocd.gdb
+    // frequency in openocd.gdb.
     let rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.sysclk(96.mhz()).freeze();
 
-    // configure GPIO pins that interface with components on the NUCLEO board,
-    // or the X-NUCLEO-IHM17M1 driver board
+    // Configure GPIO pins that interface with components on the NUCLEO board,
+    // or the X-NUCLEO-IHM17M1 driver board.
     let gpioa = dp.GPIOA.split();
     let mut led = gpioa.pa5.into_push_pull_output();
     let mut en_fault = gpioa.pa6.into_floating_input();
@@ -178,39 +183,39 @@ fn main() -> ! {
     let mut enable_w = gpioc.pc12.into_push_pull_output();
     let mut board_btn = gpioc.pc13.into_floating_input();
 
-    // set "enable" and "standby/reset" outputs high
+    // Set "enable" and "standby/reset" outputs high.
     enable_u.set_high().unwrap();
     enable_v.set_high().unwrap();
     enable_w.set_high().unwrap();
     sby_reset.set_high().unwrap();
 
-    // enable en/fault input (PA6) as EXTI6 interrupt source (on falling edge)
+    // Enable en/fault input (PA6) as EXTI6 interrupt source (on falling edge).
     en_fault.make_interrupt_source(&mut dp.SYSCFG);
     en_fault.enable_interrupt(&mut dp.EXTI);
     en_fault.trigger_on_edge(&mut dp.EXTI, Edge::FALLING);
 
-    // enable stop_pwm input (PA12) as EXTI12 interrupt source (on falling edge)
-    // a quirk in the HAL doesn't allow you to set up interrupts for an alternate
-    // function pin.
+    // Enable stop_pwm input (PA12) as EXTI12 interrupt source (on falling edge).
+    // (A quirk in the HAL doesn't allow you to set up interrupts for an alternate
+    // function pin.)
     dp.SYSCFG.exticr4.modify(|_, w| unsafe { w.exti12().bits(0) });
     dp.EXTI.imr.modify(|_, w| w.mr12().set_bit());
     dp.EXTI.ftsr.modify(|_, w| w.tr12().set_bit());
     dp.EXTI.rtsr.modify(|_, w| w.tr12().clear_bit());
 
-    // enable button (PC13) as EXTI13 interrupt source (on rising edge)
+    // Enable button (PC13) as EXTI13 interrupt source (on rising edge).
     board_btn.make_interrupt_source(&mut dp.SYSCFG);
     board_btn.enable_interrupt(&mut dp.EXTI);
     board_btn.trigger_on_edge(&mut dp.EXTI, Edge::RISING);
 
     led.set_low().unwrap();
 
-    // move values into our static RefCells. Note `free()` disables interrupts.
+    // Move values into our static RefCells. Note `free()` disables interrupts.
     free(|cs| {
         MUTEX_ITM.borrow(cs).replace(Some(cp.ITM));
         MUTEX_LED.borrow(cs).replace(Some(led));
     });
 
-    start_tim3_pwm(&clocks, 0.15);   // 0.15 Amp current limit (peak, not RMS)
+    start_tim3_pwm(&clocks, 0.15);   // 0.15 amp current limit (peak, not RMS)
     start_tim1_pwm(&clocks);
 
     free(|cs| {
@@ -222,9 +227,11 @@ fn main() -> ! {
         }
     });
 
-    // enable interrupts
-    unsafe { NVIC::unmask(interrupt::EXTI9_5) };
-    unsafe { NVIC::unmask(interrupt::EXTI15_10) };
+    // Enable interrupts.
+    unsafe {
+        NVIC::unmask(interrupt::EXTI9_5);
+        NVIC::unmask(interrupt::EXTI15_10);
+    };
 
     calibrate_pwm();
 
@@ -252,10 +259,11 @@ fn main() -> ! {
 
 /// Configures timer TIM3 for pwm output.
 ///
-/// Channel 1 of TIM3 generates a PWM signal used as current reference. A
+/// Channel 1 of TIM3 generates a pwm signal used as current reference. A
 /// comparator on the board generates a falling edge on the STOP_PWM input when
-/// measured current `Curr_fdbk2` exceeds this value. This turns off the PWM drive,
-/// and is also used by an ISR below to back off the drive duty cycle.
+/// measured current `curr_fdbk2` exceeds this value. This is used as an external
+/// trigger to turn off the pwm drive, and it also triggers an ISR below to back
+/// off the drive duty cycle.
 ///
 /// input `current_limit` is in amperes.
 fn start_tim3_pwm(clocks: &hal::rcc::Clocks, current_limit: f32) {
@@ -267,7 +275,7 @@ fn start_tim3_pwm(clocks: &hal::rcc::Clocks, current_limit: f32) {
 
     let tim3 = unsafe { &(*stm32::TIM3::ptr()) };
 
-    // Set the PWM frequency. The low-pass filter on the board has a time constant
+    // Set the pwm frequency. The low-pass filter on the board has a time constant
     // RC = 0.005s, so anything faster than a few kHz will give a stable current
     // reference.
     let freq: Hertz = 2.khz().into();
@@ -276,10 +284,10 @@ fn start_tim3_pwm(clocks: &hal::rcc::Clocks, current_limit: f32) {
         .oc1pe().set_bit().oc1m().pwm_mode1()
     );
 
-    // enable preload for timer ARR
+    // Enable preload for timer ARR.
     tim3.cr1.modify(|_, w| w.arpe().set_bit());
 
-    // calculate timer prescaler and period to get the requested frequency
+    // Calculate timer prescaler and period to get the requested frequency.
     let clk: u32 = clocks.pclk1().0 * if clocks.ppre1() == 1 { 1 } else { 2 };
     let ticks: u32 = clk / freq.0;
     let psc: u16 = ((ticks - 1) / (1 << 16)) as u16;
@@ -287,21 +295,21 @@ fn start_tim3_pwm(clocks: &hal::rcc::Clocks, current_limit: f32) {
     tim3.psc.write(|w| w.psc().bits(psc));
     tim3.arr.write(|w| w.arr().bits(arr));
 
-    // set duty cycle based on `current_limit`. The `Curr_fdbk2` voltage signal on
+    // Set duty cycle based on `current_limit`. The `curr_fdbk2` voltage signal on
     // the board is generated by shunting the current across a 0.1 ohm resistor,
     // then amplifying. (The amplifier has a gain of 3 on timescales longer than
     // ~3 microseconds.)
     //
-    // so we want (ccr/arr) * 3.3Volts = I * (0.1 ohm) * 3
+    // so we want (ccr/arr) * 3.3 volts = I * (0.1 ohm) * 3
     let ccr = ((current_limit * 0.1 * 3.0) * arr as f32 / 3.3) as u16;
     tim3.ccr1.write(|w| w.ccr().bits(ccr));
 
-    // trigger update event to load the registers
+    // Trigger update event to load the registers.
     tim3.cr1.modify(|_, w| w.urs().set_bit());
     tim3.egr.write(|w| w.ug().set_bit());
     tim3.cr1.modify(|_, w| w.urs().clear_bit());
 
-    // set up timer and start it
+    // Set up timer and start it.
     tim3.cr1.write(|w| w
         .cms().bits(0b00)
         .dir().clear_bit()
@@ -309,13 +317,13 @@ fn start_tim3_pwm(clocks: &hal::rcc::Clocks, current_limit: f32) {
         .cen().set_bit()
     );
 
-    // enable output channel 1
+    // Enable output channel 1.
     tim3.ccer.modify(|_, w| w.cc1e().set_bit());
 }
 
 /// Configures timer TIM1 for pwm output.
 ///
-/// Channels 1, 2, 3 of TIM1 generate PWM signals for phases U, V, W respectively.
+/// Channels 1, 2, 3 of TIM1 generate pwm signals for phases U, V, W respectively.
 fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
     // enable TIM1 clock and reset to a clean state
     let rcc = unsafe { &(*stm32::RCC::ptr()) };
@@ -325,14 +333,14 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
 
     let tim1 = unsafe { &(*stm32::TIM1::ptr()) };
 
-    // Set the PWM frequency. In our case it needs to be very fast because the
+    // Set the pwm frequency. In our case it needs to be very fast because the
     // X-NUCLEO-IHM17M1 driver board has no current-limiting capability on its
     // own. When driving small motors with low coil inductance, current builds
     // up quickly to cause the STSPIN233 to trigger an overcurrent fault. For
     // example With an 1103-sized 8000 KV drone motor this happens in roughly
     // two microseconds. The board makes a current feedback signal available to
     // the microcontroller, but this timescale is too fast to do current chopping
-    // in software (e.g., with an ISR). Instead we choose our PWM drive to have
+    // in software (e.g., with an ISR). Instead we choose our pwm drive to have
     // a period on that timescale, so we can drive the motor at a reasonably
     // high duty cycle (and RMS current) without causing an overcurrent fault.
     let freq: Hertz = 400.khz().into();
@@ -345,10 +353,10 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
         .oc3pe().set_bit().oc3m().pwm_mode1()
     );
 
-    // enable preload for timer ARR
+    // Enable preload for timer ARR.
     tim1.cr1.modify(|_, w| w.arpe().set_bit());
 
-    // calculate timer prescaler and period to get the requested frequency
+    // Calculate timer prescaler and period to get the requested frequency.
     let clk: u32 = clocks.pclk2().0 * if clocks.ppre2() == 1 { 1 } else { 2 };
     let ticks: u32 = clk / freq.0;
     let psc: u16 = ((ticks - 1) / (1 << 16)) as u16;
@@ -362,7 +370,7 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
 
     update_motor_drive(0.0, 0.0);   // preloads channel CCR registers
 
-    // set up external trigger (STOP_PWM) to turn off pwm output
+    // Set up external trigger (STOP_PWM) to turn off pwm output.
     tim1.smcr.modify(|_, w| w
         .etps().bits(0)
         .ece().clear_bit()
@@ -370,14 +378,14 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
         .etf().bits(0)  // no filter
     );
 
-    // trigger update event to load the registers
+    // Trigger update event to load the registers.
     tim1.cr1.modify(|_, w| w.urs().set_bit());
     tim1.egr.write(|w| w.ug().set_bit());
     tim1.cr1.modify(|_, w| w.urs().clear_bit());
 
     tim1.bdtr.modify(|_, w| w.aoe().set_bit());
 
-    // set up timer and start it
+    // Set up timer and start it.
     tim1.cr1.write(|w| w
         .cms().bits(0b00)
         .dir().clear_bit()
@@ -385,7 +393,7 @@ fn start_tim1_pwm(clocks: &hal::rcc::Clocks) {
         .cen().set_bit()
     );
 
-    // enable output channels 1, 2, 3
+    // Enable output channels 1, 2, 3.
     tim1.ccer.modify(|_, w| w
         .cc1e().set_bit()
         .cc2e().set_bit()
@@ -416,9 +424,9 @@ fn update_motor_drive(theta: f32, mod_depth: f32) {
 /// Determines maximum duty cycle for the motor.
 ///
 /// This runs the motor angle slowly through two full electrical cycles, at 1.0
-/// modulation depth. This will likely trigger multiple overcurrent faults, which
-/// will cause the interrupt routine below to back off the duty cycle until
-/// there are no more overcurrents.
+/// modulation depth. This will likely trigger several overcurrent faults, causing
+/// one of the interrupt routines below to back off the duty cycle until there are
+/// no more overcurrents.
 fn calibrate_pwm() {
     let max_theta: f32 = 2.0 * FRAC_PI_3;
     let steps = 100;
@@ -456,7 +464,7 @@ fn EXTI9_5() {
 
     back_off_drive();
 
-    // unmask interrupt pending bit for line 6 in EXTI controller
+    // Unmask interrupt pending bit for line 6 in EXTI controller.
     let exti = unsafe { &(*stm32::EXTI::ptr()) };
     exti.pr.write(|w| w.pr6().set_bit());
 }
@@ -476,7 +484,7 @@ fn EXTI15_10() {
 
         back_off_drive();
 
-        // unmask interrupt pending bit for line 12 in EXTI controller
+        // Unmask interrupt pending bit for line 12 in EXTI controller.
         exti.pr.write(|w| w.pr12().set_bit());
     }
 
@@ -493,7 +501,7 @@ fn EXTI15_10() {
     }
 }
 
-/// Reduce the PWM duty cycle multiplier `duty_mult`, then wait a while and restart
+/// Reduce the pwm duty cycle multiplier `duty_mult`, then wait a while and restart
 /// driving.
 fn back_off_drive() {
     let mut ccrs = (0_u16, 0_u16, 0_u16);
@@ -514,14 +522,14 @@ fn back_off_drive() {
 
     let tim1 = unsafe { &(*stm32::TIM1::ptr()) };
 
-    // turn off the drive and wait for overcurrent to recover
+    // Turn off the drive and wait for overcurrent to recover.
     tim1.ccr1.write(|w| w.ccr().bits(0));
     tim1.ccr2.write(|w| w.ccr().bits(0));
     tim1.ccr3.write(|w| w.ccr().bits(0));
 
     cortex_m::asm::delay(3_000_000);
 
-    // resume drive at new reduced level
+    // Resume drive at new reduced level.
     tim1.ccr1.write(|w| w.ccr().bits(ccrs.0));
     tim1.ccr2.write(|w| w.ccr().bits(ccrs.1));
     tim1.ccr3.write(|w| w.ccr().bits(ccrs.2));
@@ -540,7 +548,7 @@ fn do_motor_program(program: u8) -> u8 {
 
     return match program {
         0 | 1 | 2 | 3 => {
-            // angular simple harmonic motion through `num_rot` revolutions
+            // Angular simple harmonic motion through `num_rot` revolutions.
             let steps = 5000;
             let num_rot: f32 = if program == 3 { 5.0 } else { 1.0 };
             let ticks = match program {
@@ -560,7 +568,7 @@ fn do_motor_program(program: u8) -> u8 {
             program + 1
         },
         4 => {
-            // sprinkler kind of movement
+            // Sprinkler kind of movement.
             let num_rot: f32 = 0.5;
             let stops = 8;
             let steps = 5000;
