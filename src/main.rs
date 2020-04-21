@@ -546,7 +546,7 @@ fn do_motor_program(program: u8) -> u8 {
         }
     });
 
-    return match program {
+    match program {
         0 | 1 | 2 | 3 => {
             // Angular simple harmonic motion through `num_rot` revolutions.
             let steps = 5000;
@@ -609,5 +609,5 @@ fn do_motor_program(program: u8) -> u8 {
             cortex_m::asm::delay(30_000_000);
             0
         }
-    };
+    }
 }
